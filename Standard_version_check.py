@@ -14,7 +14,7 @@ from email.mime.multipart import MIMEMultipart
 from google import genai
 from google.genai import types
 
-# Bypass SSL Verification สำหรับการเชื่อมต่อภายนอก
+# Bypass SSL Verification ทั่วทั้งระบบอย่างสมบูรณ์
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 old_send = requests.Session.send
 def new_send(self, request, **kwargs):
@@ -54,19 +54,21 @@ def normalize_text(text):
     clean_str = str(text).lower().replace(" ", "")
     clean_str = re.sub(r'[-_]', '', clean_str)
     return clean_str
+
 # ---------------------------------------------------------
-# 🤖 ฟังก์ชันค้นหาข้อมูลด้วย GEMINI AI (อัปเดตเป็น gemini-3.6-flash)
+# 🤖 ฟังก์ชันค้นหาข้อมูลด้วย GEMINI AI (แก้ไข AttributeError และรองรับ 429 Quota)
 # ---------------------------------------------------------
 def search_standard_info_with_ai(std_number):
     """
-    ใช้ Gemini 3.6 Flash API ค้นหาข้อมูลหมายเลขมาตรฐานจาก Google Search
+    ใช้ Gemini 2.5 Flash API ค้นหาข้อมูลหมายเลขมาตรฐานจาก Google Search
     """
     api_key = st.secrets.get("GEMINI_API_KEY")
     if not api_key:
-        st.error("❌ ไม่พบ GEMINI_API_KEY ใน Streamlit Secrets")
+        st.error("❌ ไม่พบ GEMINI_API_KEY ใน secrets.toml / Streamlit Secrets")
         return None
 
     try:
+        # สร้าง Client ของ google-genai
         client = genai.Client(api_key=api_key)
 
         prompt = f"""
@@ -84,12 +86,12 @@ def search_standard_info_with_ai(std_number):
         }}
         """
 
-        # เปลี่ยนชื่อโมเดลเป็น gemini-3.6-flash ตามที่ API แนะนำ
+        # เรียกใช้ gemini-2.5-flash พร้อมเปิดระบบ Google Search Grounding
         response = client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-2.5-flash',
             contents=prompt,
             config=types.GenerateContentConfig(
-                tools=[{"google_search": {}}],  # เปิดระบบ Google Search Grounding
+                tools=[{"google_search": {}}],  # เปิดการค้นหาเว็บอัตโนมัติ
                 response_mime_type="application/json"
             )
         )
@@ -98,11 +100,13 @@ def search_standard_info_with_ai(std_number):
         return result_data
 
     except Exception as e:
-        st.error(f"❌ เกิดข้อผิดพลาดในการดึงข้อมูลจาก AI: {repr(e)}")
+        err_msg = str(e)
+        if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+            st.error("⚠️ โควต้าการใช้งาน AI ฟรีชั่วคราวเต็ม! กรุณารอประมาณ 1 นาทีแล้วทดลองกดค้นหาใหม่อีกครั้ง")
+        else:
+            st.error(f"❌ เกิดข้อผิดพลาดในการดึงข้อมูลจาก AI: {repr(e)}")
         return None
 
-
-# ---------------------------------------------------------
 # 📧 ฟังก์ชันจัดการรายชื่ออีเมลจากไฟล์ emails.json
 # ---------------------------------------------------------
 def load_saved_emails():
@@ -161,7 +165,7 @@ def send_email_notification(std_num, std_name, old_version, new_version, announc
     elif "email" in st.secrets:
         email_sec = st.secrets["email"]
     else:
-        st.error("❌ ไม่พบการตั้งค่า [email_config] หรือ [email] ใน st.secrets")
+        st.error("❌ ไม่พบการตั้งค่า [email_config] หรือ [email] ใน st.secrets / secrets.toml")
         return False
 
     try:
@@ -228,7 +232,7 @@ def get_gspread_client():
             credentials["private_key"] = credentials["private_key"].replace("\\n", "\n")
         return gspread.service_account_from_dict(credentials)
     except Exception as e:
-        st.error(f"❌ โหลดข้อมูลสิทธิ์จาก secrets ล้มเหลว: {repr(e)}")
+        st.error(f"❌ โหลดข้อมูลสิทธิ์จาก secrets.toml ล้มเหลว: {repr(e)}")
         return None
 
 def fetch_data():
@@ -258,6 +262,9 @@ def fetch_data():
         return pd.DataFrame(columns=COLUMNS)
 
 def delete_row_from_sheet(std_num):
+    """
+    ฟังก์ชันลบข้อมูลโดยเปรียบเทียบเฉพาะ Standard number
+    """
     gc = get_gspread_client()
     if not gc:
         return False
@@ -344,7 +351,7 @@ def show_add_modal():
         st.write("")
         if st.button("🤖 ให้ AI ตรวจเช็ก", use_container_width=True, type="primary"):
             if std_num_input.strip():
-                with st.spinner("🔍 AI กำลังค้นหาข้อมูลบนอินเทอร์เน็ต..."):
+                with st.spinner("🔍 AI กำลังค้นหาข้อมูลจากอินเทอร์เน็ต..."):
                     ai_res = search_standard_info_with_ai(std_num_input.strip())
                     if ai_res:
                         st.session_state.ai_data = ai_res
@@ -356,6 +363,7 @@ def show_add_modal():
     ai = st.session_state.ai_data
 
     std_name_input = st.text_input("ชื่อมาตรฐาน (Standard Name)", value=ai.get("standard_name", ""), key="popup_std_name")
+    
     version_input = st.text_input("เวอร์ชัน (Version) [AI ตรวจเช็กให้อัตโนมัติ]", value=ai.get("version", ""), key="popup_version", disabled=True)
 
     col_ann, col_enf = st.columns(2)
