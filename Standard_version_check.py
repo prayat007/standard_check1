@@ -11,9 +11,10 @@ import pandas as pd
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
-# Bypass SSL Verification ทั่วทั้งระบบอย่างสมบูรณ์
+# Bypass SSL Verification สำหรับการเชื่อมต่อภายนอก
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 old_send = requests.Session.send
 def new_send(self, request, **kwargs):
@@ -55,48 +56,46 @@ def normalize_text(text):
     return clean_str
 
 # ---------------------------------------------------------
-# 🤖 ฟังก์ชันค้นหาข้อมูลด้วย GEMINI AI (เวอร์ชันสปีดเร็วสูงสุด)
+# 🤖 ฟังก์ชันค้นหาข้อมูลด้วย GEMINI 2.5 FLASH + GOOGLE SEARCH GROUNDING
 # ---------------------------------------------------------
 def search_standard_info_with_ai(std_number):
     """
-    ใช้ Gemini API ค้นหาข้อมูลมาตรฐานแบบกระชับ รวดเร็ว
+    ใช้ Gemini 2.5 Flash API ค้นหาข้อมูลหมายเลขมาตรฐานจาก Google Search
     """
     api_key = st.secrets.get("GEMINI_API_KEY")
     if not api_key:
-        st.error("❌ ไม่พบ GEMINI_API_KEY ใน secrets.toml / Streamlit Secrets")
+        st.error("❌ ไม่พบ GEMINI_API_KEY ใน Streamlit Secrets")
         return None
 
     try:
-        genai.configure(api_key=api_key)
+        client = genai.Client(api_key=api_key)
 
-        # สั่ง Prompt ให้กระชับ สั้น ตรงประเด็น เพื่อให้ AI ประมวลผลและตอบกลับได้เร็วที่สุด
         prompt = f"""
-        สืบค้นข้อมูลมาตรฐานอุตสาหกรรม: "{std_number}"
-        ตอบกลับเป็น JSON เท่านั้น (ห้ามใส่คำเกริ่นนำหรือ markdown):
+        คุณคือผู้เชี่ยวชาญด้านมาตรฐานอุตสาหกรรม (เช่น IEC, ISO, EN, TISI)
+        กรุณาสืบค้นข้อมูลล่าสุดทางอินเทอร์เน็ตสำหรับหมายเลขมาตรฐาน: "{std_number}"
+
+        แล้วสรุปข้อมูลส่งกลับมาเป็น JSON ตามโครงสร้างนี้เท่านั้น (ห้ามใส่คำเกริ่นนำหรือ markdown แวดล้อม):
         {{
-            "standard_name": "ชื่อมาตรฐานภาษาอังกฤษสั้นๆ",
-            "version": "เวอร์ชันหรือปี ค.ศ.",
-            "announced": "ปีหรือวันที่ประกาศ (YYYY-MM-DD)",
-            "enforcement": "ปีหรือวันบังคับใช้ (YYYY-MM-DD)",
-            "details_of_changes": "สรุปสั้นๆ ไม่เกิน 2 ประโยค",
-            "reference_website": "URL เว็บไซต์หลัก"
+            "standard_name": "ชื่อมาตรฐานภาษาอังกฤษหรือไทยแบบเต็ม",
+            "version": "เวอร์ชันล่าสุดหรือปี ค.ศ. ของเวอร์ชัน เช่น Edition 6.0 หรือ 2020",
+            "announced": "วันที่ประกาศใช้ (รูปแบบ YYYY-MM-DD หรือระบุปีถ้าไม่ทราบวัน)",
+            "enforcement": "วันที่มีผลบังคับใช้ (รูปแบบ YYYY-MM-DD หรือระบุปีถ้าไม่ทราบวัน)",
+            "details_of_changes": "สรุปสาระสำคัญหรือข้อแตกต่างของการปรับปรุงในเวอร์ชันนี้โดยสังเขป",
+            "reference_website": "URL เว็บไซต์อ้างอิงหลักที่พบข้อมูล เช่น iec.ch, iso.org หรือเว็บทางการอื่นๆ"
         }}
         """
 
-        # ใช้โมเดล flash ที่ประมวลผลเร็วที่สุด
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        # ตั้งค่า safety_settings และ generation_config เพื่อความเร็วในการสร้างข้อความ
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.1,  # ลดค่าความคิดสร้างสรรค์เพื่อให้AIตอบกลับเร็วขึ้น
-                max_output_tokens=300  # จำกัดความยาวผลลัพธ์ไม่ให้พิมพ์ยาวเกินไป
+        # เรียกใช้ gemini-2.5-flash พร้อมเปิดการใช้งาน Google Search Grounding
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[{"google_search": {}}],  # เปิดระบบ Google ค้นเว็บอัตโนมัติ
+                response_mime_type="application/json"
             )
         )
 
-        clean_json_text = response.text.replace("```json", "").replace("```", "").strip()
-        result_data = json.loads(clean_json_text)
+        result_data = json.loads(response.text)
         return result_data
 
     except Exception as e:
@@ -162,7 +161,7 @@ def send_email_notification(std_num, std_name, old_version, new_version, announc
     elif "email" in st.secrets:
         email_sec = st.secrets["email"]
     else:
-        st.error("❌ ไม่พบการตั้งค่า [email_config] หรือ [email] ใน st.secrets / secrets.toml")
+        st.error("❌ ไม่พบการตั้งค่า [email_config] หรือ [email] ใน st.secrets")
         return False
 
     try:
@@ -229,7 +228,7 @@ def get_gspread_client():
             credentials["private_key"] = credentials["private_key"].replace("\\n", "\n")
         return gspread.service_account_from_dict(credentials)
     except Exception as e:
-        st.error(f"❌ โหลดข้อมูลสิทธิ์จาก secrets.toml ล้มเหลว: {repr(e)}")
+        st.error(f"❌ โหลดข้อมูลสิทธิ์จาก secrets ล้มเหลว: {repr(e)}")
         return None
 
 def fetch_data():
@@ -259,9 +258,6 @@ def fetch_data():
         return pd.DataFrame(columns=COLUMNS)
 
 def delete_row_from_sheet(std_num):
-    """
-    ฟังก์ชันลบข้อมูลโดยเปรียบเทียบเฉพาะ Standard number
-    """
     gc = get_gspread_client()
     if not gc:
         return False
@@ -348,7 +344,7 @@ def show_add_modal():
         st.write("")
         if st.button("🤖 ให้ AI ตรวจเช็ก", use_container_width=True, type="primary"):
             if std_num_input.strip():
-                with st.spinner("🔍 AI กำลังค้นหาข้อมูลจากอินเทอร์เน็ต..."):
+                with st.spinner("🔍 AI กำลังค้นหาข้อมูลบนอินเทอร์เน็ต..."):
                     ai_res = search_standard_info_with_ai(std_num_input.strip())
                     if ai_res:
                         st.session_state.ai_data = ai_res
@@ -360,7 +356,6 @@ def show_add_modal():
     ai = st.session_state.ai_data
 
     std_name_input = st.text_input("ชื่อมาตรฐาน (Standard Name)", value=ai.get("standard_name", ""), key="popup_std_name")
-    
     version_input = st.text_input("เวอร์ชัน (Version) [AI ตรวจเช็กให้อัตโนมัติ]", value=ai.get("version", ""), key="popup_version", disabled=True)
 
     col_ann, col_enf = st.columns(2)
