@@ -56,11 +56,11 @@ def normalize_text(text):
     return clean_str
 
 # ---------------------------------------------------------
-# 🤖 ฟังก์ชันค้นหาข้อมูลด้วย GEMINI AI (แก้ไข AttributeError และรองรับ 429 Quota)
+# 🤖 ฟังก์ชันค้นหาข้อมูลด้วย GEMINI AI (อัปเดตโมเดลเป็น gemini-3.6-flash)
 # ---------------------------------------------------------
 def search_standard_info_with_ai(std_number):
     """
-    ใช้ Gemini 2.5 Flash API ค้นหาข้อมูลหมายเลขมาตรฐานจาก Google Search
+    ใช้ Gemini 3.6 Flash API ค้นหาข้อมูลหมายเลขมาตรฐานจาก Google Search
     """
     api_key = st.secrets.get("GEMINI_API_KEY")
     if not api_key:
@@ -68,8 +68,13 @@ def search_standard_info_with_ai(std_number):
         return None
 
     try:
-        # สร้าง Client ของ google-genai
-        client = genai.Client(api_key=api_key)
+        import httpx
+        custom_httpx_client = httpx.Client(verify=False)
+
+        client = genai.Client(
+            api_key=api_key,
+            http_client=custom_httpx_client
+        )
 
         prompt = f"""
         คุณคือผู้เชี่ยวชาญด้านมาตรฐานอุตสาหกรรม (เช่น IEC, ISO, EN, TISI)
@@ -86,12 +91,12 @@ def search_standard_info_with_ai(std_number):
         }}
         """
 
-        # เรียกใช้ gemini-2.5-flash พร้อมเปิดระบบ Google Search Grounding
+        # เปลี่ยนเป็น gemini-3.6-flash ตามคำแนะนำของ API
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.6-flash',
             contents=prompt,
             config=types.GenerateContentConfig(
-                tools=[{"google_search": {}}],  # เปิดการค้นหาเว็บอัตโนมัติ
+                tools=[{"google_search": {}}],
                 response_mime_type="application/json"
             )
         )
