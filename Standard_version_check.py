@@ -11,8 +11,9 @@ import pandas as pd
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import google.generativeai as genai
 
-# Bypass SSL Verification
+# Bypass SSL Verification ทั่วทั้งระบบอย่างสมบูรณ์
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 old_send = requests.Session.send
 def new_send(self, request, **kwargs):
@@ -29,19 +30,24 @@ ssl._create_default_https_context = ssl._create_unverified_context
 # ---------------------------------------------------------
 SHEET_ID = "1YkTRa4Db4HEkDX-vBX9svDdlZfpbqdIvqrk7d5L1Q_w"
 
-# ระบุตำแหน่งไฟล์ emails.json
+# รายชื่อหัวคอลัมน์มาตรฐานทั้ง 7 คอลัมน์
+COLUMNS = [
+    "Standard number", 
+    "Standard name", 
+    "Version", 
+    "Announced", 
+    "Enforcement", 
+    "Detail of the changes",
+    "Reference website"
+]
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 EMAIL_FILE = os.path.join(BASE_DIR, "emails.json")
 
 # ---------------------------------------------------------
-# 🧹 ฟังก์ชันสำหรับปรับข้อความให้เป็นมาตรฐานเดียวกันก่อนเปรียบเทียบ
+# 🧹 ฟังก์ชันปรับข้อความก่อนเทียบ
 # ---------------------------------------------------------
 def normalize_text(text):
-    """
-    แปลงข้อความให้เป็นตัวพิมพ์เล็ก ลบช่องว่างทั้งหมด และตัดขีดออก 
-    เพื่อให้เปรียบเทียบแล้วได้ผลลัพธ์เหมือนกันแน่นอน
-    ตัวอย่าง: ' STD - 2026 / 001 ' -> 'std2026/001'
-    """
     if not text:
         return ""
     clean_str = str(text).lower().replace(" ", "")
@@ -49,10 +55,58 @@ def normalize_text(text):
     return clean_str
 
 # ---------------------------------------------------------
+# 🤖 ฟังก์ชันค้นหาข้อมูลด้วย GEMINI AI (เวอร์ชันสปีดเร็วสูงสุด)
+# ---------------------------------------------------------
+def search_standard_info_with_ai(std_number):
+    """
+    ใช้ Gemini API ค้นหาข้อมูลมาตรฐานแบบกระชับ รวดเร็ว
+    """
+    api_key = st.secrets.get("GEMINI_API_KEY")
+    if not api_key:
+        st.error("❌ ไม่พบ GEMINI_API_KEY ใน secrets.toml / Streamlit Secrets")
+        return None
+
+    try:
+        genai.configure(api_key=api_key)
+
+        # สั่ง Prompt ให้กระชับ สั้น ตรงประเด็น เพื่อให้ AI ประมวลผลและตอบกลับได้เร็วที่สุด
+        prompt = f"""
+        สืบค้นข้อมูลมาตรฐานอุตสาหกรรม: "{std_number}"
+        ตอบกลับเป็น JSON เท่านั้น (ห้ามใส่คำเกริ่นนำหรือ markdown):
+        {{
+            "standard_name": "ชื่อมาตรฐานภาษาอังกฤษสั้นๆ",
+            "version": "เวอร์ชันหรือปี ค.ศ.",
+            "announced": "ปีหรือวันที่ประกาศ (YYYY-MM-DD)",
+            "enforcement": "ปีหรือวันบังคับใช้ (YYYY-MM-DD)",
+            "details_of_changes": "สรุปสั้นๆ ไม่เกิน 2 ประโยค",
+            "reference_website": "URL เว็บไซต์หลัก"
+        }}
+        """
+
+        # ใช้โมเดล flash ที่ประมวลผลเร็วที่สุด
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # ตั้งค่า safety_settings และ generation_config เพื่อความเร็วในการสร้างข้อความ
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.1,  # ลดค่าความคิดสร้างสรรค์เพื่อให้AIตอบกลับเร็วขึ้น
+                max_output_tokens=300  # จำกัดความยาวผลลัพธ์ไม่ให้พิมพ์ยาวเกินไป
+            )
+        )
+
+        clean_json_text = response.text.replace("```json", "").replace("```", "").strip()
+        result_data = json.loads(clean_json_text)
+        return result_data
+
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาดในการดึงข้อมูลจาก AI: {repr(e)}")
+        return None
+
+# ---------------------------------------------------------
 # 📧 ฟังก์ชันจัดการรายชื่ออีเมลจากไฟล์ emails.json
 # ---------------------------------------------------------
 def load_saved_emails():
-    """โหลดรายชื่ออีเมลจากไฟล์ emails.json"""
     if not os.path.exists(EMAIL_FILE):
         return []
     try:
@@ -64,7 +118,6 @@ def load_saved_emails():
         return []
 
 def save_saved_emails(email_list):
-    """บันทึกรายชื่ออีเมลลงไฟล์ emails.json ถาวร"""
     try:
         with open(EMAIL_FILE, "w", encoding="utf-8") as f:
             json.dump(email_list, f, indent=4, ensure_ascii=False)
@@ -96,12 +149,9 @@ def remove_saved_email(email_str):
     return False
 
 # ---------------------------------------------------------
-# 📨 ฟังก์ชันส่ง Email แจ้งเตือน (พร้อมรายงานผลสำเร็จ)
+# 📨 ฟังก์ชันส่ง Email แจ้งเตือน
 # ---------------------------------------------------------
-def send_email_notification(std_num, old_version, new_version, receiver_emails):
-    """
-    ฟังก์ชันส่งอีเมลแจ้งเตือนเมื่อมีการอัปเดต Version
-    """
+def send_email_notification(std_num, std_name, old_version, new_version, announced, enforcement, details, ref_web, receiver_emails):
     if not receiver_emails:
         st.error("❌ ไม่พบรายชื่ออีเมลผู้รับในระบบ!")
         return False
@@ -121,14 +171,20 @@ def send_email_notification(std_num, old_version, new_version, receiver_emails):
         sender_email = email_sec["sender_email"]
         sender_password = email_sec["sender_password"]
 
-        subject = f"🔔 แจ้งเตือน: มีการเปลี่ยน Version ของ {std_num}"
-        body = f"""สวัสดีครับ,
+        subject = f"🔔 แจ้งเตือน: มีการอัปเดตข้อมูลมาตรฐาน {std_num}"
+        body = f"""สวัสดีครับ/ค่ะ,
 
-มีการปรับเปลี่ยนเวอร์ชันของหมายเลขมาตรฐานในระบบ:
+มีการปรับเปลี่ยนข้อมูลหมายเลขมาตรฐานในระบบ:
 
 📌 หมายเลขมาตรฐาน (Standard Number): {std_num}
+📝 ชื่อมาตรฐาน (Standard Name): {std_name if std_name else '-'}
 🔄 เวอร์ชันเดิม (Old Version): {old_version if old_version else 'รายการใหม่'}
-🆕 เวอร์ชันใหม่ (New Version): {new_version}
+🆕 เวอร์ชันใหม่ (New Version): {new_version if new_version else '-'}
+📅 วันที่ประกาศ (Announced): {announced if announced else '-'}
+⚖️ วันที่มีผลบังคับใช้ (Enforcement): {enforcement if enforcement else '-'}
+📜 รายละเอียดการเปลี่ยนแปลง (Details of Changes):
+{details if details else '-'}
+🔗 เว็บไซต์อ้างอิง (Reference Website): {ref_web if ref_web else '-'}
 
 โปรดตรวจสอบข้อมูลล่าสุดในระบบ
 """
@@ -153,7 +209,6 @@ def send_email_notification(std_num, old_version, new_version, receiver_emails):
                 server.login(sender_email, sender_password)
                 server.sendmail(sender_email, receiver_emails, msg.as_string())
 
-        # 📌 รายงานการส่งอีเมลสำเร็จบนหน้าจอ
         email_list_str = ", ".join([f"`{e}`" for e in receiver_emails])
         st.success(f"✅ ส่งอีเมลแจ้งเตือนสำเร็จไปยัง {len(receiver_emails)} รายการ:\n{email_list_str}")
         st.toast("📧 ส่งอีเมลแจ้งเตือนสำเร็จเรียบร้อยแล้ว!", icon="📨")
@@ -180,24 +235,33 @@ def get_gspread_client():
 def fetch_data():
     gc = get_gspread_client()
     if not gc:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=COLUMNS)
     
     try:
         sh = gc.open_by_key(SHEET_ID)
         worksheet = sh.get_worksheet(0)
         values = worksheet.get_all_values()
         
+        # ปรับแก้หัวตารางใน Google Sheets ให้ตรงกันทั้ง 7 คอลัมน์โดยอัตโนมัติ
+        if len(values) == 0 or values[0] != COLUMNS:
+            worksheet.update('A1:G1', [COLUMNS])
+            values = worksheet.get_all_values()
+
         if len(values) > 1:
             df = pd.DataFrame(values[1:], columns=values[0])
-            return df
-        elif len(values) == 1:
-            return pd.DataFrame(columns=values[0])
-        return pd.DataFrame()
+            for col in COLUMNS:
+                if col not in df.columns:
+                    df[col] = ""
+            return df[COLUMNS]
+        return pd.DataFrame(columns=COLUMNS)
     except Exception as err:
         st.error(f"⚠️ เกิดข้อผิดพลาดในการดึงข้อมูล: {repr(err)}")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=COLUMNS)
 
-def delete_row_from_sheet(std_num, version):
+def delete_row_from_sheet(std_num):
+    """
+    ฟังก์ชันลบข้อมูลโดยเปรียบเทียบเฉพาะ Standard number
+    """
     gc = get_gspread_client()
     if not gc:
         return False
@@ -208,15 +272,13 @@ def delete_row_from_sheet(std_num, version):
         
         row_to_delete = None
         target_std_norm = normalize_text(std_num)
-        target_ver_norm = normalize_text(version)
 
         for idx, row in enumerate(values):
             if idx == 0:
                 continue
-            if len(row) >= 2:
+            if len(row) > 0:
                 row_std_norm = normalize_text(row[0])
-                row_ver_norm = normalize_text(row[1])
-                if row_std_norm == target_std_norm and row_ver_norm == target_ver_norm:
+                if row_std_norm == target_std_norm:
                     row_to_delete = idx + 1
                     break
 
@@ -224,7 +286,7 @@ def delete_row_from_sheet(std_num, version):
             worksheet.delete_rows(row_to_delete)
             return True
         else:
-            st.error("❌ ไม่พบบรรทัดที่ต้องการลบใน Google Sheets")
+            st.error(f"❌ ไม่พบบรรทัดหมายเลขมาตรฐาน '{std_num}' ใน Google Sheets")
             return False
     except Exception as e:
         st.error(f"❌ เกิดข้อผิดพลาดในการลบข้อมูล: {repr(e)}")
@@ -267,37 +329,71 @@ def show_email_manager_modal():
         st.info("ℹ️ ยังไม่มีรายการอีเมลในระบบ")
 
 # ---------------------------------------------------------
-# 💡 POP-UP MODAL เพิ่ม/แก้ไข หมายเลขมาตรฐาน & VERSION
+# 💡 POP-UP MODAL เพิ่ม/แก้ไข หมายเลขมาตรฐาน
 # ---------------------------------------------------------
 @st.dialog("➕ เพิ่ม / อัปเดตหมายเลขมาตรฐาน")
 def show_add_modal():
-    std_num_input = st.text_input(
-        "หมายเลขมาตรฐาน (Standard Number)", 
-        placeholder="เช่น STD-2026-001", 
-        key="popup_std_input"
-    )
+    if "ai_data" not in st.session_state:
+        st.session_state.ai_data = {}
+
+    col_std, col_ai_btn = st.columns([2.7, 1.3])
+    with col_std:
+        std_num_input = st.text_input(
+            "หมายเลขมาตรฐาน (Standard Number) *", 
+            placeholder="เช่น IEC 60335-1", 
+            key="popup_std_input"
+        )
+    with col_ai_btn:
+        st.write("")
+        st.write("")
+        if st.button("🤖 ให้ AI ตรวจเช็ก", use_container_width=True, type="primary"):
+            if std_num_input.strip():
+                with st.spinner("🔍 AI กำลังค้นหาข้อมูลจากอินเทอร์เน็ต..."):
+                    ai_res = search_standard_info_with_ai(std_num_input.strip())
+                    if ai_res:
+                        st.session_state.ai_data = ai_res
+                        st.success("✅ AI ค้นหาข้อมูลสำเร็จ!")
+                        st.rerun()
+            else:
+                st.warning("⚠️ กรุณากรอกหมายเลขมาตรฐานก่อน")
+
+    ai = st.session_state.ai_data
+
+    std_name_input = st.text_input("ชื่อมาตรฐาน (Standard Name)", value=ai.get("standard_name", ""), key="popup_std_name")
     
-    version_input = st.text_input(
-        "เวอร์ชัน (Version)", 
-        placeholder="เช่น v1.0, v1.1, 2.0", 
-        key="popup_ver_input"
-    )
+    version_input = st.text_input("เวอร์ชัน (Version) [AI ตรวจเช็กให้อัตโนมัติ]", value=ai.get("version", ""), key="popup_version", disabled=True)
+
+    col_ann, col_enf = st.columns(2)
+    with col_ann:
+        announced_input = st.text_input("Announced (วันที่ประกาศ)", value=ai.get("announced", ""), key="popup_ann")
+    with col_enf:
+        enforcement_input = st.text_input("Enforcement (วันบังคับใช้)", value=ai.get("enforcement", ""), key="popup_enf")
+
+    details_input = st.text_area("Detail of the changes", value=ai.get("details_of_changes", ""), key="popup_details")
+    ref_web_input = st.text_input("Reference Website (เว็บไซต์อ้างอิง)", value=ai.get("reference_website", ""), key="popup_ref")
 
     saved_emails = load_saved_emails()
     if saved_emails:
         st.info(f"📨 **จะส่งแจ้งเตือนไปยัง ({len(saved_emails)} อีเมล):**\n" + ", ".join([f"`{e}`" for e in saved_emails]))
     else:
-        st.warning("⚠️ ยังไม่ได้ตั้งค่าอีเมลรับแจ้งเตือนใน emails.json (กดเพิ่มที่ '⚙️ จัดการอีเมล Alarm')")
+        st.warning("⚠️ ยังไม่ได้ตั้งค่าอีเมลรับแจ้งเตือนใน emails.json")
 
     col_save, col_close = st.columns([1, 1])
     
     with col_save:
-        if st.button("💾 บันทึกข้อมูล", type="primary", use_container_width=True):
+        if st.button("💾 บันทึกข้อมูลลง Google Sheets", type="primary", use_container_width=True):
             std_num_clean = std_num_input.strip()
+            std_name_clean = std_name_input.strip()
             version_clean = version_input.strip()
+            announced_clean = announced_input.strip()
+            enforcement_clean = enforcement_input.strip()
+            details_clean = details_input.strip()
+            ref_web_clean = ref_web_input.strip()
 
-            if not std_num_clean or not version_clean:
-                st.warning("⚠️ กรุณากรอกทั้ง 'หมายเลขมาตรฐาน' และ 'Version' ก่อนบันทึก")
+            if not std_num_clean:
+                st.warning("⚠️ กรุณากรอก 'หมายเลขมาตรฐาน' ก่อนบันทึก")
+            elif not version_clean:
+                st.warning("⚠️ กรุณากดปุ่ม '🤖 ให้ AI ตรวจเช็ก' ก่อนบันทึก")
             else:
                 try:
                     gc = get_gspread_client()
@@ -306,9 +402,9 @@ def show_add_modal():
                         worksheet = sh.get_worksheet(0)
                         values = worksheet.get_all_values()
                         
-                        if not values:
-                            worksheet.append_row(["Standard Number", "Version"])
-                            values = [["Standard Number", "Version"]]
+                        worksheet.update('A1:G1', [COLUMNS])
+                        if not values or values[0] != COLUMNS:
+                            values = [COLUMNS]
 
                         found_row_idx = None
                         existing_version = None
@@ -322,42 +418,57 @@ def show_add_modal():
                                 continue
                             if len(row) > 0:
                                 row_std_norm = normalize_text(row[0])
-                                row_ver_norm = normalize_text(row[1]) if len(row) > 1 else ""
+                                row_ver_norm = normalize_text(row[2]) if len(row) > 2 else ""
 
                                 if row_std_norm == input_std_norm:
                                     found_row_idx = idx + 1
-                                    existing_version = row[1].strip() if len(row) > 1 else ""
+                                    existing_version = row[2].strip() if len(row) > 2 else ""
                                     if row_ver_norm == input_ver_norm:
                                         is_exact_duplicate = True
                                     break
 
+                        new_row_data = [
+                            std_num_clean,      # Col A
+                            std_name_clean,     # Col B
+                            version_clean,      # Col C
+                            announced_clean,    # Col D
+                            enforcement_clean,  # Col E
+                            details_clean,      # Col F
+                            ref_web_clean       # Col G
+                        ]
+
                         if is_exact_duplicate:
                             st.error(f"⚠️ หมายเลขมาตรฐาน '{std_num_clean}' เวอร์ชัน '{version_clean}' มีอยู่ในระบบแล้ว!")
                         
-                        # อัปเดต Version เดิม
                         elif found_row_idx:
-                            worksheet.update_cell(found_row_idx, 2, version_clean)
-                            st.toast(f"🔄 อัปเดตเวอร์ชันของ '{std_num_clean}' เป็น '{version_clean}' เรียบร้อยแล้ว!", icon="🎉")
+                            cell_range = f"A{found_row_idx}:G{found_row_idx}"
+                            worksheet.update(cell_range, [new_row_data])
+                            st.toast(f"🔄 อัปเดตข้อมูลของ '{std_num_clean}' เรียบร้อยแล้ว!", icon="🎉")
 
-                            # เรียกส่งอีเมลแจ้งเตือน
                             if saved_emails:
-                                send_email_notification(std_num_clean, existing_version, version_clean, saved_emails)
+                                send_email_notification(
+                                    std_num_clean, std_name_clean, existing_version, version_clean, 
+                                    announced_clean, enforcement_clean, details_clean, ref_web_clean, saved_emails
+                                )
 
+                            st.session_state.ai_data = {}
                             st.cache_resource.clear()
-                            time.sleep(2.5)  # แสดงกล่องข้อความรายงานผลส่งอีเมล 2.5 วินาทีก่อนปิด Pop-up
+                            time.sleep(2.5)
                             st.rerun()
 
-                        # เพิ่มรายการใหม่
                         else:
-                            worksheet.append_row([std_num_clean, version_clean])
+                            worksheet.append_row(new_row_data)
                             st.toast(f"✅ บันทึกหมายเลขใหม่ '{std_num_clean}' (Ver. {version_clean}) เรียบร้อยแล้ว!", icon="🎉")
 
-                            # เรียกส่งอีเมลแจ้งเตือน
                             if saved_emails:
-                                send_email_notification(std_num_clean, None, version_clean, saved_emails)
+                                send_email_notification(
+                                    std_num_clean, std_name_clean, None, version_clean, 
+                                    announced_clean, enforcement_clean, details_clean, ref_web_clean, saved_emails
+                                )
 
+                            st.session_state.ai_data = {}
                             st.cache_resource.clear()
-                            time.sleep(2.5)  # แสดงกล่องข้อความรายงานผลส่งอีเมล 2.5 วินาทีก่อนปิด Pop-up
+                            time.sleep(2.5)
                             st.rerun()
 
                 except Exception as err:
@@ -365,6 +476,7 @@ def show_add_modal():
 
     with col_close:
         if st.button("❌ ยกเลิก", use_container_width=True):
+            st.session_state.ai_data = {}
             st.rerun()
 
 # ---------------------------------------------------------
@@ -384,10 +496,9 @@ def show_delete_modal(selected_items, data_df):
             success_count = 0
             for idx in selected_items:
                 row = data_df.iloc[idx]
-                std_num = str(row.get("Standard Number", row.iloc[0]))
-                version = str(row.get("Version", row.iloc[1] if len(row) > 1 else ""))
+                std_num = str(row.get("Standard number", row.iloc[0]))
                 
-                if delete_row_from_sheet(std_num, version):
+                if delete_row_from_sheet(std_num):
                     success_count += 1
             
             st.toast(f"🗑️ ลบข้อมูลสำเร็จ {success_count} รายการ", icon="✅")
