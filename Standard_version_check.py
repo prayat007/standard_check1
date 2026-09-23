@@ -54,13 +54,12 @@ def normalize_text(text):
     clean_str = str(text).lower().replace(" ", "")
     clean_str = re.sub(r'[-_]', '', clean_str)
     return clean_str
-
 # ---------------------------------------------------------
-# 🤖 ฟังก์ชันค้นหาข้อมูลด้วย GEMINI 2.5 FLASH + GOOGLE SEARCH GROUNDING
+# 🤖 ฟังก์ชันค้นหาข้อมูลด้วย GEMINI AI (อัปเดตเป็น gemini-3.6-flash)
 # ---------------------------------------------------------
 def search_standard_info_with_ai(std_number):
     """
-    ใช้ Gemini 2.5 Flash API ค้นหาข้อมูลหมายเลขมาตรฐานจาก Google Search
+    ใช้ Gemini 3.6 Flash API ค้นหาข้อมูลหมายเลขมาตรฐานจาก Google Search
     """
     api_key = st.secrets.get("GEMINI_API_KEY")
     if not api_key:
@@ -85,12 +84,12 @@ def search_standard_info_with_ai(std_number):
         }}
         """
 
-        # เรียกใช้ gemini-2.5-flash พร้อมเปิดการใช้งาน Google Search Grounding
+        # เปลี่ยนชื่อโมเดลเป็น gemini-3.6-flash ตามที่ API แนะนำ
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.6-flash',
             contents=prompt,
             config=types.GenerateContentConfig(
-                tools=[{"google_search": {}}],  # เปิดระบบ Google ค้นเว็บอัตโนมัติ
+                tools=[{"google_search": {}}],  # เปิดระบบ Google Search Grounding
                 response_mime_type="application/json"
             )
         )
@@ -101,6 +100,7 @@ def search_standard_info_with_ai(std_number):
     except Exception as e:
         st.error(f"❌ เกิดข้อผิดพลาดในการดึงข้อมูลจาก AI: {repr(e)}")
         return None
+
 
 # ---------------------------------------------------------
 # 📧 ฟังก์ชันจัดการรายชื่ออีเมลจากไฟล์ emails.json
