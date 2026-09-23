@@ -122,7 +122,7 @@ def send_email_notification(std_num, old_version, new_version, receiver_emails):
         sender_password = email_sec["sender_password"]
 
         subject = f"🔔 แจ้งเตือน: มีการเปลี่ยน Version ของ {std_num}"
-        body = f"""สวัสดีครับ/ค่ะ,
+        body = f"""สวัสดีครับ,
 
 มีการปรับเปลี่ยนเวอร์ชันของหมายเลขมาตรฐานในระบบ:
 
