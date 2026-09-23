@@ -3,3 +3,4 @@ gspread
 pandas
 requests
 urllib3
+google-genai
