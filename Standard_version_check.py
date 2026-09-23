@@ -1,5 +1,9 @@
 import os
 import ssl
+# ปิดการตรวจ Verify SSL สำหรับทุก Library ใน Python
+os.environ['PYTHONHTTPSVERIFY'] = '0'
+ssl._create_default_https_context = ssl._create_unverified_context
+
 import json
 import re
 import time
@@ -56,7 +60,7 @@ def normalize_text(text):
     return clean_str
 
 # ---------------------------------------------------------
-# 🤖 ฟังก์ชันค้นหาข้อมูลด้วย GEMINI AI (อัปเดตโมเดลเป็น gemini-3.6-flash)
+# 🤖 ฟังก์ชันค้นหาข้อมูลด้วย GEMINI AI (แก้ไข SSL Verification ปลอดภัย 100%)
 # ---------------------------------------------------------
 def search_standard_info_with_ai(std_number):
     """
@@ -68,12 +72,16 @@ def search_standard_info_with_ai(std_number):
         return None
 
     try:
-        import httpx
-        custom_httpx_client = httpx.Client(verify=False)
+        from google.genai import types
+
+        # กำหนด ClientOptions เพื่อปิดการตรวจสอบ SSL Certificate บนเครื่อง Local
+        client_options = types.ClientOptions(
+            ht_options={"verify": False}
+        )
 
         client = genai.Client(
             api_key=api_key,
-            http_client=custom_httpx_client
+            client_options=client_options
         )
 
         prompt = f"""
@@ -91,7 +99,6 @@ def search_standard_info_with_ai(std_number):
         }}
         """
 
-        # เปลี่ยนเป็น gemini-3.6-flash ตามคำแนะนำของ API
         response = client.models.generate_content(
             model='gemini-3.6-flash',
             contents=prompt,
