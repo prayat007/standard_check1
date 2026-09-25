@@ -64,7 +64,7 @@ def normalize_text(text):
 # ---------------------------------------------------------
 def search_standard_info_with_ai(std_number):
     """
-    ใช้ Gemini 3.6 Flash API ค้นหาข้อมูลหมายเลขมาตรฐานจาก Google Search
+    ใช้ Gemini API ค้นหาข้อมูลหมายเลขมาตรฐานจาก Google Search
     """
     api_key = st.secrets.get("GEMINI_API_KEY")
     if not api_key:
@@ -74,36 +74,36 @@ def search_standard_info_with_ai(std_number):
     try:
         from google.genai import types
 
-        # กำหนด ClientOptions เพื่อปิดการตรวจสอบ SSL Certificate บนเครื่อง Local
-        client_options = types.ClientOptions(
-            ht_options={"verify": False}
+        # กำหนด HttpOptions เพื่อปิดการตรวจสอบ SSL Certificate ให้ถูกต้องตาม google-genai SDK
+        http_options = types.HttpOptions(
+            client_args={'verify': False}
         )
 
         client = genai.Client(
             api_key=api_key,
-            client_options=client_options
+            http_options=http_options
         )
 
         prompt = f"""
-        คุณคือผู้เชี่ยวชาญด้านมาตรฐานอุตสาหกรรม (เช่น IEC, ISO, EN, TISI)
-        กรุณาสืบค้นข้อมูลล่าสุดทางอินเทอร์เน็ตสำหรับหมายเลขมาตรฐาน: "{std_number}"
+คุณคือผู้เชี่ยวชาญด้านมาตรฐานอุตสาหกรรม (เช่น IEC, ISO, EN, TISI)
+กรุณาสืบค้นข้อมูลล่าสุดทางอินเทอร์เน็ตสำหรับหมายเลขมาตรฐาน: "{std_number}"
 
-        แล้วสรุปข้อมูลส่งกลับมาเป็น JSON ตามโครงสร้างนี้เท่านั้น (ห้ามใส่คำเกริ่นนำหรือ markdown แวดล้อม):
-        {{
-            "standard_name": "ชื่อมาตรฐานภาษาอังกฤษหรือไทยแบบเต็ม",
-            "version": "เวอร์ชันล่าสุดหรือปี ค.ศ. ของเวอร์ชัน เช่น Edition 6.0 หรือ 2020",
-            "announced": "วันที่ประกาศใช้ (รูปแบบ YYYY-MM-DD หรือระบุปีถ้าไม่ทราบวัน)",
-            "enforcement": "วันที่มีผลบังคับใช้ (รูปแบบ YYYY-MM-DD หรือระบุปีถ้าไม่ทราบวัน)",
-            "details_of_changes": "สรุปสาระสำคัญหรือข้อแตกต่างของการปรับปรุงในเวอร์ชันนี้โดยสังเขป",
-            "reference_website": "URL เว็บไซต์อ้างอิงหลักที่พบข้อมูล เช่น iec.ch, iso.org หรือเว็บทางการอื่นๆ"
-        }}
-        """
+แล้วสรุปข้อมูลส่งกลับมาเป็น JSON ตามโครงสร้างนี้เท่านั้น (ห้ามใส่คำเกริ่นนำหรือ markdown แวดล้อม):
+{{
+    "standard_name": "ชื่อมาตรฐานภาษาอังกฤษหรือไทยแบบเต็ม",
+    "version": "เวอร์ชันล่าสุดหรือปี ค.ศ. ของเวอร์ชัน เช่น Edition 6.0 หรือ 2020",
+    "announced": "วันที่ประกาศใช้ (รูปแบบ YYYY-MM-DD หรือระบุปีถ้าไม่ทราบวัน)",
+    "enforcement": "วันที่มีผลบังคับใช้ (รูปแบบ YYYY-MM-DD หรือระบุปีถ้าไม่ทราบวัน)",
+    "details_of_changes": "สรุปสาระสำคัญหรือข้อแตกต่างของการปรับปรุงในเวอร์ชันนี้โดยสังเขป",
+    "reference_website": "URL เว็บไซต์อ้างอิงหลักที่พบข้อมูล เช่น iec.ch, iso.org หรือเว็บทางการอื่นๆ"
+}}
+"""
 
         response = client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-2.5-flash',
             contents=prompt,
             config=types.GenerateContentConfig(
-                tools=[{"google_search": {}}],
+                tools=[types.Tool(google_search=types.GoogleSearch())],
                 response_mime_type="application/json"
             )
         )
@@ -114,11 +114,12 @@ def search_standard_info_with_ai(std_number):
     except Exception as e:
         err_msg = str(e)
         if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-            st.error("⚠️ โควต้าการใช้งาน AI ฟรีชั่วคราวเต็ม! กรุณารอประมาณ 1 นาทีแล้วทดลองกดค้นหาใหม่อีกครั้ง")
+            st.error("⚠️ โควต้าการใช้งาน AI ชั่วคราวเต็ม! กรุณารอประมาณ 1 นาทีแล้วทดลองกดค้นหาใหม่อีกครั้ง")
         else:
             st.error(f"❌ เกิดข้อผิดพลาดในการดึงข้อมูลจาก AI: {repr(e)}")
         return None
 
+# ---------------------------------------------------------
 # 📧 ฟังก์ชันจัดการรายชื่ออีเมลจากไฟล์ emails.json
 # ---------------------------------------------------------
 def load_saved_emails():
